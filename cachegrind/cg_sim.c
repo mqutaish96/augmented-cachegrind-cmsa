@@ -36,6 +36,140 @@
       - both blocks miss                 --> one miss (not two)
 */
 
+/*------------------------------------------------------------*/
+/*--- Types and Data Structures                            ---*/
+/*------------------------------------------------------------*/
+#define DEFAULT_WORD_SIZE     8
+#define MAX_NUM_BINS          8
+
+typedef
+   struct {
+      ULong a;  /* total # memory accesses of this kind */
+      ULong m1; /* misses in the first level cache */
+      ULong mL; /* misses in the second level cache */
+   }
+   CacheCC;
+
+typedef
+   struct {
+      ULong b;  /* total # branches of this kind */
+      ULong mp; /* number of branches mispredicted */
+   }
+   BranchCC;
+
+//------------------------------------------------------------
+// Primary data structure #1: CC table
+// - Holds the per-source-line hit/miss stats, grouped by file/function/line.
+// - an ordered set of CCs.  CC indexing done by file/function/line (as
+//   determined from the instrAddr).
+// - Traversed for dumping stats at end in file/func/line hierarchy.
+
+typedef struct {
+   HChar* file;
+   const HChar* fn;
+   Int    line;
+}
+CodeLoc;
+
+typedef struct {
+   CodeLoc  loc; /* Source location that these counts pertain to */
+   CacheCC  Ir;  /* Insn read counts */
+   CacheCC  Dr;  /* Data read counts */
+   CacheCC  Dw;  /* Data write/modify counts */
+   BranchCC Bc;  /* Conditional branch counts */
+   BranchCC Bi;  /* Indirect branch counts */
+
+/*----------Extension of cache efficiency -----------*/
+   ULong num_evicts[MAX_NUM_BINS]; /* The number of cachline evictions with n(1~8) words used*/
+} LineCC;
+
+// First compare file, then fn, then line.
+static Word cmp_CodeLoc_LineCC(const void *vloc, const void *vcc)
+{
+   Word res;
+   const CodeLoc* a = (const CodeLoc*)vloc;
+   const CodeLoc* b = &(((const LineCC*)vcc)->loc);
+
+   res = VG_(strcmp)(a->file, b->file);
+   if (0 != res)
+      return res;
+
+   res = VG_(strcmp)(a->fn, b->fn);
+   if (0 != res)
+      return res;
+
+   return a->line - b->line;
+}
+
+/*----------Extension of cache efficiency by JinChao-----------*/
+Int CU_DEBUG = 0;
+VgFile  *cu_fp = NULL;
+
+//Setting nth bit in a bitvector on.
+static
+void bitop_set(UChar* bv, UInt pos)
+{
+	if(bv == NULL || pos < 0)
+		return;
+
+	*bv |= 1 << pos;	
+}
+
+//Setting multiple bits in a bitvector on.
+__attribute__((always_inline))
+static __inline__
+void bitop_set_range(UInt* bv, UInt begin, UInt end)
+{
+	Int i;
+	for(i = begin; i <= end; i++)
+		*bv |= 1 << i;
+}
+
+// Counting non-zero bits in a bit vector using Brian Kernighan’s Algorithm
+__attribute__((always_inline))
+static __inline__
+UInt bitop_count(UChar bv)
+{
+	UInt count = 0;
+
+	while(bv) {
+		bv &= (bv - 1);
+		count ++;
+	}
+
+	return count;
+}
+
+static
+Int open_cu_log(void)
+{
+   const HChar* cu_out_file = "causage.dbg";
+//      VG_(expand_file_name)("--cachegrind-out-file", clo_ce_out_file);
+
+   cu_fp = VG_(fopen)(cu_out_file, VKI_O_CREAT|VKI_O_TRUNC|VKI_O_WRONLY,
+                                        VKI_S_IRUSR|VKI_S_IWUSR);
+   if (cu_fp == NULL) 
+      return -1;
+
+   return 0;
+}
+
+static
+void close_cu_log(void)
+{
+   if (!cu_fp) 
+      return;
+
+   VG_(fclose)(cu_fp);
+}
+
+typedef struct {
+  UWord        tag;
+  UInt         bitvector;   // keep track of word usage
+  Int          line_num; // source code line number
+  LineCC       *src_line;   // pointer to LineCC in cg_main.c
+} cacheline_t;
+
 typedef struct {
    Int          size;                   /* bytes */
    Int          assoc;
@@ -45,13 +179,23 @@ typedef struct {
    Int          line_size_bits;
    Int          tag_shift;
    HChar        desc_line[128];         /* large enough */
-   UWord*       tags;
+//   UWord*       tags;
+   UInt         line_mask;
+   Int          num_words_per_line;
+   Int          num_words_bits;
+   cacheline_t  *cachelines;
+   UInt         *lru_list;
 } cache_t2;
+
+
+static cache_t2 LL;
+static cache_t2 I1;
+static cache_t2 D1;
 
 /* By this point, the size/assoc/line_size has been checked. */
 static void cachesim_initcache(cache_t config, cache_t2* c)
 {
-   Int i;
+   Int i, j;
 
    c->size      = config.size;
    c->assoc     = config.assoc;
@@ -70,11 +214,33 @@ static void cachesim_initcache(cache_t config, cache_t2* c)
                                  c->size, c->line_size, c->assoc);
    }
 
-   c->tags = VG_(malloc)("cg.sim.ci.1",
-                         sizeof(UWord) * c->sets * c->assoc);
+/*   c->tags = VG_(malloc)("cg.sim.ci.1",
+                         sizeof(UWord) * c->sets * c->assoc);*/
+
+   c->line_mask = c->line_size - 1;
+   c->num_words_per_line = c->line_size / sizeof(UWord);
+   c->num_words_bits = VG_(log2)(c->num_words_per_line);
+
+   c->cachelines = VG_(malloc)("cg.sim.ci.1",
+                         sizeof(cacheline_t) * c->sets * c->assoc);
 
    for (i = 0; i < c->sets * c->assoc; i++)
-      c->tags[i] = 0;
+   {
+//      c->tags[i] = 0;
+        c->cachelines[i].tag = 0;
+        c->cachelines[i].bitvector = 0;
+        c->cachelines[i].line_num = 0;
+        c->cachelines[i].src_line = NULL;
+   }
+
+   c->lru_list = VG_(malloc)("cg.sim.ci.2",
+                         sizeof(UInt) * c->sets * c->assoc);
+
+   for (i = 0; i < c->sets; i++)
+   {
+     for (j = 0; j < c->assoc; j++)
+       c->lru_list[i * c->assoc + j] = c->assoc - 1 - j;
+   }
 }
 
 /* This attribute forces GCC to inline the function, getting rid of a
@@ -84,49 +250,88 @@ static void cachesim_initcache(cache_t config, cache_t2* c)
  */
 __attribute__((always_inline))
 static __inline__
-Bool cachesim_setref_is_miss(cache_t2* c, UInt set_no, UWord tag)
+Bool cachesim_setref_is_miss(cache_t2* c, UInt set_no, UWord tag, UInt word_begin, UInt word_end, Int line_num, void* line)
 {
    int i, j;
-   UWord *set;
+//   UWord *set;
+   cacheline_t *cacheline;
+   UInt *id;
+   UInt tmp, num_words;
 
-   set = &(c->tags[set_no * c->assoc]);
+//   set = &(c->tags[set_no * c->assoc]);
+   cacheline = &(c->cachelines[set_no * c->assoc]);
+   id = &(c->lru_list[set_no * c->assoc]);
 
    /* This loop is unrolled for just the first case, which is the most */
    /* common.  We can't unroll any further because it would screw up   */
    /* if we have a direct-mapped (1-way) cache.                        */
-   if (tag == set[0])
+   if (tag == cacheline[id[0]].tag)
+   {
+      bitop_set_range(&cacheline[id[0]].bitvector, word_begin, word_end);
+
+      if (CU_DEBUG && cu_fp && c == &D1) 
+         VG_(fprintf)(cu_fp,  "H %lx %x, line: %d, begin: %u, end: %u\n", tag, cacheline[id[0]].bitvector, line_num, word_begin, word_end);
+
       return False;
+   }
 
    /* If the tag is one other than the MRU, move it into the MRU spot  */
    /* and shuffle the rest down.                                       */
    for (i = 1; i < c->assoc; i++) {
-      if (tag == set[i]) {
+      if (tag == cacheline[id[i]].tag) {
+         tmp = id[i];
          for (j = i; j > 0; j--) {
-            set[j] = set[j - 1];
+            id[j] = id[j - 1];
          }
-         set[0] = tag;
+         id[0] = tmp;
+
+         bitop_set_range(&cacheline[tmp].bitvector, word_begin, word_end);
+
+         if (CU_DEBUG && cu_fp && c == &D1) 
+            VG_(fprintf)(cu_fp,  "H %lx %x, line: %d, at line: %d, begin: %u, end: %u\n", tag, cacheline[tmp].bitvector, cacheline[tmp].line_num, line_num, word_begin, word_end);
 
          return False;
       }
    }
 
    /* A miss;  install this tag as MRU, shuffle rest down. */
+   UInt evict_id = id[c->assoc - 1];
+   cacheline_t evict_line = cacheline[evict_id];
+   num_words = bitop_count(evict_line.bitvector);
+
+   if (CU_DEBUG && (!num_words || num_words > MAX_NUM_BINS) && evict_line.tag && cu_fp && c == &D1)
+      VG_(fprintf)(cu_fp,  "ERROR: Ev %lx %x, %u, line: %d, %p\n", evict_line.tag, evict_line.bitvector, num_words, evict_line.line_num, evict_line.src_line);
+
    for (j = c->assoc - 1; j > 0; j--) {
-      set[j] = set[j - 1];
+      id[j] = id[j - 1];
    }
-   set[0] = tag;
+   cacheline[evict_id].tag = tag;
+   cacheline[evict_id].bitvector = 0;
+   cacheline[evict_id].line_num = line_num;
+   cacheline[evict_id].src_line = line;
+   bitop_set_range(&cacheline[evict_id].bitvector, word_begin, word_end);
+   id[0] = evict_id;
+
+   if(evict_line.tag && evict_line.src_line)
+   {
+     evict_line.src_line->num_evicts[num_words-1]++;
+   }
 
    return True;
 }
 
 __attribute__((always_inline))
 static __inline__
-Bool cachesim_ref_is_miss(cache_t2* c, Addr a, UChar size)
+Bool cachesim_ref_is_miss(cache_t2* c, Addr a, UChar size, Int line_num, LineCC *line)
 {
    /* A memory block has the size of a cache line */
    UWord block1 =  a         >> c->line_size_bits;
    UWord block2 = (a+size-1) >> c->line_size_bits;
    UInt  set1   = block1 & c->sets_min_1;
+
+   UWord addr_offset = a & c->line_mask; 
+   UWord word_begin = addr_offset >> c->num_words_bits;
+   UWord word_end1 = (addr_offset + size - 1) >> c->num_words_bits;
 
    /* Tags used in real caches are minimal to save space.
     * As the last bits of the block number of addresses mapping
@@ -137,21 +342,27 @@ Bool cachesim_ref_is_miss(cache_t2* c, Addr a, UChar size)
     */
    UWord tag1   = block1;
 
+   if (CU_DEBUG && cu_fp && c == &D1) 
+      VG_(fprintf)(cu_fp,  "Addr %lx, size: %lu\n", a, size);
+
    /* Access entirely within line. */
    if (block1 == block2)
-      return cachesim_setref_is_miss(c, set1, tag1);
+      return cachesim_setref_is_miss(c, set1, tag1, word_begin, word_end1, line_num, line);
 
    /* Access straddles two lines. */
    else if (block1 + 1 == block2) {
       UInt  set2 = block2 & c->sets_min_1;
       UWord tag2 = block2;
 
+      UWord word_end2 = word_end1;
+      word_end1 = ((a & c->line_mask) + c->line_size - 1) >> c->num_words_bits;
+
       /* always do both, as state is updated as side effect */
-      if (cachesim_setref_is_miss(c, set1, tag1)) {
-         cachesim_setref_is_miss(c, set2, tag2);
+      if (cachesim_setref_is_miss(c, set1, tag1, word_begin, word_end1, line_num, line)) {
+         cachesim_setref_is_miss(c, set2, tag2, 0, word_end2, line_num, line);
          return True;
       }
-      return cachesim_setref_is_miss(c, set2, tag2);
+      return cachesim_setref_is_miss(c, set2, tag2, 0, word_end2, line_num, line);
    }
    VG_(printf)("addr: %lx  size: %u  blocks: %lu %lu",
                a, size, block1, block2);
@@ -160,25 +371,51 @@ Bool cachesim_ref_is_miss(cache_t2* c, Addr a, UChar size)
    return True;
 }
 
+static
+void cachesim_collect_undrained_lines(cache_t2* c)
+{
+   Int i, j;
+   UInt id, num_words;
+   cacheline_t *cl = c->cachelines;
 
-static cache_t2 LL;
-static cache_t2 I1;
-static cache_t2 D1;
+   for (i = 0; i < c->sets; i++)
+   {
+     for (j = 0; j < c->assoc; j++)
+     {
+        id = c->lru_list[i * c->assoc + j];
+        if(cl[id].tag && cl[id].src_line) 
+        {
+           num_words = bitop_count(cl[id].bitvector);
+           if (CU_DEBUG && (!num_words || num_words > MAX_NUM_BINS) && cu_fp && c == &D1)
+              VG_(fprintf)(cu_fp,  "ERROR: Ev %lx %x, %u, line: %d, %p, %llu\n", cl[id].tag, cl[id].bitvector, num_words, cl[id].line_num, cl[id].src_line, cl[id].src_line->num_evicts[num_words-1]);
+           cl[id].src_line->num_evicts[num_words-1]++;
+        }
+     }
+   }
+}
 
 static void cachesim_initcaches(cache_t I1c, cache_t D1c, cache_t LLc)
 {
    cachesim_initcache(I1c, &I1);
    cachesim_initcache(D1c, &D1);
    cachesim_initcache(LLc, &LL);
+
+   open_cu_log();
+}
+
+static void cachesim_finish(void)
+{
+   cachesim_collect_undrained_lines(&D1);
+   close_cu_log();
 }
 
 __attribute__((always_inline))
 static __inline__
 void cachesim_I1_doref_Gen(Addr a, UChar size, ULong* m1, ULong *mL)
 {
-   if (cachesim_ref_is_miss(&I1, a, size)) {
+   if (cachesim_ref_is_miss(&I1, a, size, 0, NULL)) {
       (*m1)++;
-      if (cachesim_ref_is_miss(&LL, a, size))
+      if (cachesim_ref_is_miss(&LL, a, size, 0, NULL))
          (*mL)++;
    }
 }
@@ -191,25 +428,32 @@ void cachesim_I1_doref_NoX(Addr a, UChar size, ULong* m1, ULong *mL)
    UWord block  = a >> I1.line_size_bits;
    UInt  I1_set = block & I1.sets_min_1;
 
+   UWord addr_offset = a & I1.line_mask; 
+   UWord word_begin = addr_offset >> I1.num_words_bits;
+   UWord word_end = (addr_offset + size - 1) >> I1.num_words_bits;
+
    // use block as tag
-   if (cachesim_setref_is_miss(&I1, I1_set, block)) {
+   if (cachesim_setref_is_miss(&I1, I1_set, block, word_begin, word_end, 0, NULL)) {
       UInt  LL_set = block & LL.sets_min_1;
       (*m1)++;
       // can use block as tag as L1I and LL cache line sizes are equal
-      if (cachesim_setref_is_miss(&LL, LL_set, block))
+      if (cachesim_setref_is_miss(&LL, LL_set, block, word_begin, word_end, 0, NULL))
          (*mL)++;
    }
 }
 
 __attribute__((always_inline))
 static __inline__
-void cachesim_D1_doref(Addr a, UChar size, ULong* m1, ULong *mL)
+Bool cachesim_D1_doref(Addr a, UChar size, ULong* m1, ULong *mL, int line_num, LineCC* line)
 {
-   if (cachesim_ref_is_miss(&D1, a, size)) {
+   if (cachesim_ref_is_miss(&D1, a, size, line_num, line)) {
       (*m1)++;
-      if (cachesim_ref_is_miss(&LL, a, size))
+      if (cachesim_ref_is_miss(&LL, a, size, 0, NULL))
          (*mL)++;
+
+      return True;
    }
+   return False;
 }
 
 /* Check for special case IrNoX. Called at instrumentation time.

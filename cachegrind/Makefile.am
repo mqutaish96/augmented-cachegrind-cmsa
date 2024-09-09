@@ -12,7 +12,7 @@ EXTRA_DIST = \
 
 pkginclude_HEADERS = cachegrind.h
 
-bin_SCRIPTS = cg_annotate cg_diff cg_merge
+bin_SCRIPTS = cg_annotate cg_diff cg_merge cu_annotate
 
 noinst_HEADERS = \
 	cg_arch.h \
@@ -88,4 +88,8 @@ pydiff:
 pymerge:
 	+../auxprogs/pybuild.sh ../auxprogs cg_merge.in cg_merge
 
-.PHONY: pyann pydiff pymerge
+# "Build" `cu_annotate`. The `+` avoids warnings about the jobserver.
+pycu:
+	+../auxprogs/pybuild.sh ../auxprogs cu_annotate.in cu_annotate
+
+.PHONY: pyann pydiff pymerge pycu
