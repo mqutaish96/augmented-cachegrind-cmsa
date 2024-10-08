@@ -80,7 +80,8 @@ typedef struct {
    BranchCC Bi;  /* Indirect branch counts */
 
 /*----------Extension of cache efficiency -----------*/
-   ULong num_evicts[MAX_NUM_BINS]; /* The number of cachline evictions with n(1~8) words used*/
+   ULong num_evicts_D1[MAX_NUM_BINS]; /* The number of cachline evictions with n(1~8) words used*/
+   ULong num_evicts_LL[MAX_NUM_BINS]; /* The number of cachline evictions with n(1~8) words used*/
 } LineCC;
 
 // First compare file, then fn, then line.
@@ -269,8 +270,8 @@ Bool cachesim_setref_is_miss(cache_t2* c, UInt set_no, UWord tag, UInt word_begi
    {
       bitop_set_range(&cacheline[id[0]].bitvector, word_begin, word_end);
 
-      if (CU_DEBUG && cu_fp && c == &D1) 
-         VG_(fprintf)(cu_fp,  "H %lx %x, line: %d, begin: %u, end: %u\n", tag, cacheline[id[0]].bitvector, line_num, word_begin, word_end);
+      /*if (CU_DEBUG && cu_fp && c == &LL) 
+         VG_(fprintf)(cu_fp,  "H %lx %x, line: %d, begin: %u, end: %u\n", tag, cacheline[id[0]].bitvector, line_num, word_begin, word_end);*/
 
       return False;
    }
@@ -287,8 +288,8 @@ Bool cachesim_setref_is_miss(cache_t2* c, UInt set_no, UWord tag, UInt word_begi
 
          bitop_set_range(&cacheline[tmp].bitvector, word_begin, word_end);
 
-         if (CU_DEBUG && cu_fp && c == &D1) 
-            VG_(fprintf)(cu_fp,  "H %lx %x, line: %d, at line: %d, begin: %u, end: %u\n", tag, cacheline[tmp].bitvector, cacheline[tmp].line_num, line_num, word_begin, word_end);
+         /*if (CU_DEBUG && cu_fp && c == &LL) 
+            VG_(fprintf)(cu_fp,  "H %lx %x, line: %d, at line: %d, begin: %u, end: %u\n", tag, cacheline[tmp].bitvector, cacheline[tmp].line_num, line_num, word_begin, word_end);*/
 
          return False;
       }
@@ -314,7 +315,14 @@ Bool cachesim_setref_is_miss(cache_t2* c, UInt set_no, UWord tag, UInt word_begi
 
    if(evict_line.tag && evict_line.src_line)
    {
-     evict_line.src_line->num_evicts[num_words-1]++;
+     if(c==&D1)
+       evict_line.src_line->num_evicts_D1[num_words-1]++;
+
+     if(c==&LL)
+       evict_line.src_line->num_evicts_LL[num_words-1]++;
+
+     if (CU_DEBUG && cu_fp && c == &LL) 
+       VG_(fprintf)(cu_fp,  "Ev %lx %x, %u, line: %d, %p\n", evict_line.tag, evict_line.bitvector, num_words, evict_line.line_num, evict_line.src_line);
    }
 
    return True;
@@ -342,8 +350,8 @@ Bool cachesim_ref_is_miss(cache_t2* c, Addr a, UChar size, Int line_num, LineCC 
     */
    UWord tag1   = block1;
 
-   if (CU_DEBUG && cu_fp && c == &D1) 
-      VG_(fprintf)(cu_fp,  "Addr %lx, size: %lu\n", a, size);
+   /*if (CU_DEBUG && cu_fp && c == &LL) 
+      VG_(fprintf)(cu_fp,  "Addr %lx, size: %lu\n", a, size);*/
 
    /* Access entirely within line. */
    if (block1 == block2)
@@ -386,9 +394,15 @@ void cachesim_collect_undrained_lines(cache_t2* c)
         if(cl[id].tag && cl[id].src_line) 
         {
            num_words = bitop_count(cl[id].bitvector);
-           if (CU_DEBUG && (!num_words || num_words > MAX_NUM_BINS) && cu_fp && c == &D1)
-              VG_(fprintf)(cu_fp,  "ERROR: Ev %lx %x, %u, line: %d, %p, %llu\n", cl[id].tag, cl[id].bitvector, num_words, cl[id].line_num, cl[id].src_line, cl[id].src_line->num_evicts[num_words-1]);
-           cl[id].src_line->num_evicts[num_words-1]++;
+/*           if (CU_DEBUG && (!num_words || num_words > MAX_NUM_BINS) && cu_fp && c == &D1)
+              VG_(fprintf)(cu_fp,  "ERROR: Ev %lx %x, %u, line: %d, %p, %llu\n", cl[id].tag, cl[id].bitvector, num_words, cl[id].line_num, cl[id].src_line, cl[id].src_line->num_evicts_D1[num_words-1]);*/
+
+           if(c==&D1)
+             cl[id].src_line->num_evicts_D1[num_words-1]++;
+           if(c==&LL)
+             cl[id].src_line->num_evicts_LL[num_words-1]++;
+           if (CU_DEBUG && cu_fp && c == &LL)
+              VG_(fprintf)(cu_fp,  "Ev %lx %x, %u, line: %d, %p, %llu\n", cl[id].tag, cl[id].bitvector, num_words, cl[id].line_num, cl[id].src_line, cl[id].src_line->num_evicts_LL[num_words-1]);
         }
      }
    }
@@ -406,6 +420,7 @@ static void cachesim_initcaches(cache_t I1c, cache_t D1c, cache_t LLc)
 static void cachesim_finish(void)
 {
    cachesim_collect_undrained_lines(&D1);
+   cachesim_collect_undrained_lines(&LL);
    close_cu_log();
 }
 
@@ -448,7 +463,7 @@ Bool cachesim_D1_doref(Addr a, UChar size, ULong* m1, ULong *mL, int line_num, L
 {
    if (cachesim_ref_is_miss(&D1, a, size, line_num, line)) {
       (*m1)++;
-      if (cachesim_ref_is_miss(&LL, a, size, 0, NULL))
+      if (cachesim_ref_is_miss(&LL, a, size, line_num, line))
          (*mL)++;
 
       return True;

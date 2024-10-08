@@ -63,7 +63,8 @@ static Bool  clo_cache_sim  = False; /* do cache simulation? */
 static Bool  clo_branch_sim = False; /* do branch simulation? */
 static Bool  clo_instr_at_start = True; /* instrument at startup? */
 static const HChar* clo_cachegrind_out_file = "cachegrind.out.%p";
-static const HChar* clo_cacheusage_out_file = "cacheusage.out.%p";
+static const HChar* clo_cacheusage_d1_out_file = "cacheusage.d1.out.%p";
+static const HChar* clo_cacheusage_ll_out_file = "cacheusage.ll.out.%p";
 
 /*------------------------------------------------------------*/
 /*--- Cachesim configuration                               ---*/
@@ -233,7 +234,10 @@ static LineCC* get_lineCC(Addr origAddr)
       lineCC->Bi.mp    = 0;
 
       for(i = 0; i < MAX_NUM_BINS; i++)
-        lineCC->num_evicts[i] = 0;
+      {
+        lineCC->num_evicts_D1[i] = 0;
+        lineCC->num_evicts_LL[i] = 0;
+      }
 
       VG_(OSetGen_Insert)(CC_table, lineCC);
    }
@@ -1514,10 +1518,10 @@ static void fprint_CC_table_and_calc_totals(void)
    VG_(fclose)(fp);
 }
 
-static void fprint_CC_table_and_cache_usage(void)
+static void fprint_CC_table_and_cache_d1_usage(void)
 {
    Int     i;
-   ULong   total_line, summary[MAX_NUM_BINS], total, reuse;
+   ULong   total_line, summary[MAX_NUM_BINS], total, access, miss;
    VgFile  *fp;
    HChar   *currFile = NULL;
    const HChar *currFn = NULL;
@@ -1529,7 +1533,7 @@ static void fprint_CC_table_and_cache_usage(void)
    // parent and child will incorrectly write to the same file;  this
    // happened in 3.3.0.
    HChar* cacheusage_out_file =
-      VG_(expand_file_name)("--cacheusage-out-file", clo_cacheusage_out_file);
+      VG_(expand_file_name)("--cacheusage-d1-out-file", clo_cacheusage_d1_out_file);
 
    fp = VG_(fopen)(cacheusage_out_file, VKI_O_CREAT|VKI_O_TRUNC|VKI_O_WRONLY,
                                         VKI_S_IRUSR|VKI_S_IWUSR);
@@ -1578,14 +1582,18 @@ static void fprint_CC_table_and_cache_usage(void)
    }*/
 
    //"histogram bins:" line
-   VG_(fprintf)(fp, "\nbins: Total Access# ");
+   VG_(fprintf)(fp, "\nbins: Access# Miss# Cacheline# ");
    for(i = 0; i < MAX_NUM_BINS; i++)
      VG_(fprintf)(fp, "%d-words ", i+1);
    VG_(fprintf)(fp, "\n");
 
-   reuse = 0;
+   access = 0;
+   access = 0;
+   miss = 0;
    for(i = 0; i < MAX_NUM_BINS; i++)
+   {
       summary[i] = 0;
+   }
 
    // Traverse every lineCC
    VG_(OSetGen_ResetIter)(CC_table);
@@ -1613,26 +1621,27 @@ static void fprint_CC_table_and_cache_usage(void)
       }
 
       // Print the LineCC
-      total_line= 0;
+      total_line = 0;
       for(i = 0; i < MAX_NUM_BINS; i++)
       {
         // Update summary stats
-        summary[i] += lineCC->num_evicts[i]; 
+        summary[i] += lineCC->num_evicts_D1[i]; 
 
         // Calculate stats per line
-        total_line += lineCC->num_evicts[i]; 
+        total_line += lineCC->num_evicts_D1[i]; 
       }
 
       if (clo_cache_sim && total_line) {
-         reuse += lineCC->Dr.a + lineCC->Dw.a;
-         VG_(fprintf)(fp,  "%d %llu %llu" 
+         access += lineCC->Dr.a + lineCC->Dw.a;
+         miss += lineCC->Dr.m1 + lineCC->Dw.m1;
+         VG_(fprintf)(fp,  "%d %llu %llu %llu" 
                            " %llu %llu %llu"
                            " %llu %llu %llu"
                            " %llu %llu\n",
-                           lineCC->loc.line, total_line, lineCC->Dr.a + lineCC->Dw.a,
-                           lineCC->num_evicts[0], lineCC->num_evicts[1], lineCC->num_evicts[2],
-                           lineCC->num_evicts[3], lineCC->num_evicts[4], lineCC->num_evicts[5],
-                           lineCC->num_evicts[6], lineCC->num_evicts[7]);
+                           lineCC->loc.line, lineCC->Dr.a + lineCC->Dw.a, lineCC->Dr.m1 + lineCC->Dw.m1, total_line,
+                           lineCC->num_evicts_D1[0], lineCC->num_evicts_D1[1], lineCC->num_evicts_D1[2],
+                           lineCC->num_evicts_D1[3], lineCC->num_evicts_D1[4], lineCC->num_evicts_D1[5],
+                           lineCC->num_evicts_D1[6], lineCC->num_evicts_D1[7]);
       }
    }
 
@@ -1640,14 +1649,16 @@ static void fprint_CC_table_and_cache_usage(void)
    // during traversal.
    total = 0;
    for(i = 0; i < MAX_NUM_BINS; i++)
+   {
       total += summary[i];
+   }
 
    if (clo_cache_sim) {
-      VG_(fprintf)(fp,  "summary: %llu %llu"
+      VG_(fprintf)(fp,  "summary: %llu %llu %llu"
                         " %llu %llu %llu"
                         " %llu %llu %llu"
                         " %llu %llu\n",
-                        total, reuse,
+                        access, miss, total,
                         summary[0],summary[1], summary[2],
                         summary[3],summary[4], summary[5],
                         summary[6],summary[7]);
@@ -1655,6 +1666,331 @@ static void fprint_CC_table_and_cache_usage(void)
 
    VG_(fclose)(fp);
 }
+
+static void fprint_CC_table_and_cache_ll_usage(void)
+{
+   Int     i;
+   ULong   total_line, summary[MAX_NUM_BINS], total, access, miss;
+   VgFile  *fp;
+   HChar   *currFile = NULL;
+   const HChar *currFn = NULL;
+   LineCC* lineCC;
+
+   // Setup output filename.  Nb: it's important to do this now, ie. as late
+   // as possible.  If we do it at start-up and the program forks and the
+   // output file format string contains a %p (pid) specifier, both the
+   // parent and child will incorrectly write to the same file;  this
+   // happened in 3.3.0.
+   HChar* cacheusage_out_file =
+      VG_(expand_file_name)("--cacheusage-ll-out-file", clo_cacheusage_ll_out_file);
+
+   fp = VG_(fopen)(cacheusage_out_file, VKI_O_CREAT|VKI_O_TRUNC|VKI_O_WRONLY,
+                                        VKI_S_IRUSR|VKI_S_IWUSR);
+   if (fp == NULL) {
+      // If the file can't be opened for whatever reason (conflict
+      // between multiple cachegrinded processes?), give up now.
+      VG_(umsg)("error: can't open output data file '%s'\n",
+                cacheusage_out_file );
+      VG_(umsg)("       ... so detailed results will be missing.\n");
+      VG_(free)(cacheusage_out_file);
+      return;
+   } else {
+      VG_(free)(cacheusage_out_file);
+   }
+
+   if (clo_cache_sim) {
+      // "desc:" lines (giving I1/D1/LL cache configuration). The spaces after
+      // the 2nd colon makes cg_annotate's output look nicer.
+      VG_(fprintf)(fp,  "desc: I1 cache:         %s\n"
+                        "desc: D1 cache:         %s\n"
+                        "desc: LL cache:         %s\n",
+                        I1.desc_line, D1.desc_line, LL.desc_line);
+   }
+
+   // "cmd:" line
+   VG_(fprintf)(fp, "cmd: %s", VG_(args_the_exename));
+   for (i = 0; i < VG_(sizeXA)( VG_(args_for_client) ); i++) {
+      HChar* arg = * (HChar**) VG_(indexXA)( VG_(args_for_client), i );
+      VG_(fprintf)(fp, " %s", arg);
+   }
+
+   // "events:" line
+/*   if (clo_cache_sim && clo_branch_sim) {
+      VG_(fprintf)(fp, "\nevents: Ir I1mr ILmr Dr D1mr DLmr Dw D1mw DLmw "
+                                  "Bc Bcm Bi Bim\n");
+   }
+   else if (clo_cache_sim && !clo_branch_sim) {
+      VG_(fprintf)(fp, "\nevents: Ir I1mr ILmr Dr D1mr DLmr Dw D1mw DLmw "
+                                  "\n");
+   }
+   else if (!clo_cache_sim && clo_branch_sim) {
+      VG_(fprintf)(fp, "\nevents: Ir Bc Bcm Bi Bim\n");
+   }
+   else {
+      VG_(fprintf)(fp, "\nevents: Ir\n");
+   }*/
+
+   //"histogram bins:" line
+   VG_(fprintf)(fp, "\nbins: Access# Miss# Cacheline# ");
+   for(i = 0; i < MAX_NUM_BINS; i++)
+     VG_(fprintf)(fp, "%d-words ", i+1);
+   VG_(fprintf)(fp, "\n");
+
+   access = 0;
+   miss = 0;
+   for(i = 0; i < MAX_NUM_BINS; i++)
+   {
+      summary[i] = 0;
+   }
+
+   // Traverse every lineCC
+   VG_(OSetGen_ResetIter)(CC_table);
+   while ( (lineCC = VG_(OSetGen_Next)(CC_table)) ) {
+      Bool just_hit_a_new_file = False;
+      // If we've hit a new file, print a "fl=" line.  Note that because
+      // each string is stored exactly once in the string table, we can use
+      // pointer comparison rather than strcmp() to test for equality, which
+      // is good because most of the time the comparisons are equal and so
+      // the whole strings would have to be checked.
+      if ( lineCC->loc.file != currFile ) {
+         currFile = lineCC->loc.file;
+         VG_(fprintf)(fp, "fl=%s\n", currFile);
+         distinct_files++;
+         just_hit_a_new_file = True;
+      }
+      // If we've hit a new function, print a "fn=" line.  We know to do
+      // this when the function name changes, and also every time we hit a
+      // new file (in which case the new function name might be the same as
+      // in the old file, hence the just_hit_a_new_file test).
+      if ( just_hit_a_new_file || lineCC->loc.fn != currFn ) {
+         currFn = lineCC->loc.fn;
+         VG_(fprintf)(fp, "fn=%s\n", currFn);
+         distinct_fns++;
+      }
+
+      // Print the LineCC
+      total_line = 0;
+      for(i = 0; i < MAX_NUM_BINS; i++)
+      {
+        // Update summary stats
+        summary[i] += lineCC->num_evicts_LL[i];
+
+        // Calculate stats per line
+        total_line += lineCC->num_evicts_LL[i]; 
+      }
+
+      if (clo_cache_sim && total_line) {
+         access += lineCC->Dr.m1 + lineCC->Dw.m1;
+         miss += lineCC->Dr.mL + lineCC->Dw.mL;
+         VG_(fprintf)(fp,  "%d %llu %llu %llu" 
+                           " %llu %llu %llu"
+                           " %llu %llu %llu"
+                           " %llu %llu\n",
+                           lineCC->loc.line, lineCC->Dr.m1 + lineCC->Dw.m1, lineCC->Dr.mL + lineCC->Dw.mL, total_line,
+                           lineCC->num_evicts_LL[0], lineCC->num_evicts_LL[1], lineCC->num_evicts_LL[2],
+                           lineCC->num_evicts_LL[3], lineCC->num_evicts_LL[4], lineCC->num_evicts_LL[5],
+                           lineCC->num_evicts_LL[6], lineCC->num_evicts_LL[7]);
+      }
+   }
+
+   // Summary stats must come after rest of table, since we calculate them
+   // during traversal.
+   total = 0;
+   for(i = 0; i < MAX_NUM_BINS; i++)
+   {
+      total += summary[i];
+   }
+
+   if (clo_cache_sim) {
+      VG_(fprintf)(fp,  "summary: %llu %llu %llu"
+                        " %llu %llu %llu"
+                        " %llu %llu %llu"
+                        " %llu %llu\n",
+                        access, miss, total,
+                        summary[0],summary[1], summary[2],
+                        summary[3],summary[4], summary[5],
+                        summary[6],summary[7]);
+   }
+
+   VG_(fclose)(fp);
+}
+
+/*
+static void fprint_CC_table_and_cache_usage(void)
+{
+   Int     i;
+   ULong   total_line_D1, total_line_LL, summary_D1[MAX_NUM_BINS], summary_LL[MAX_NUM_BINS], total_D1, total_LL, access_D1, access_LL, miss_LL;
+   VgFile  *fp;
+   HChar   *currFile = NULL;
+   const HChar *currFn = NULL;
+   LineCC* lineCC;
+
+   // Setup output filename.  Nb: it's important to do this now, ie. as late
+   // as possible.  If we do it at start-up and the program forks and the
+   // output file format string contains a %p (pid) specifier, both the
+   // parent and child will incorrectly write to the same file;  this
+   // happened in 3.3.0.
+   HChar* cacheusage_out_file =
+      VG_(expand_file_name)("--cacheusage-out-file", clo_cacheusage_out_file);
+
+   fp = VG_(fopen)(cacheusage_out_file, VKI_O_CREAT|VKI_O_TRUNC|VKI_O_WRONLY,
+                                        VKI_S_IRUSR|VKI_S_IWUSR);
+   if (fp == NULL) {
+      // If the file can't be opened for whatever reason (conflict
+      // between multiple cachegrinded processes?), give up now.
+      VG_(umsg)("error: can't open output data file '%s'\n",
+                cacheusage_out_file );
+      VG_(umsg)("       ... so detailed results will be missing.\n");
+      VG_(free)(cacheusage_out_file);
+      return;
+   } else {
+      VG_(free)(cacheusage_out_file);
+   }
+
+   if (clo_cache_sim) {
+      // "desc:" lines (giving I1/D1/LL cache configuration). The spaces after
+      // the 2nd colon makes cg_annotate's output look nicer.
+      VG_(fprintf)(fp,  "desc: I1 cache:         %s\n"
+                        "desc: D1 cache:         %s\n"
+                        "desc: LL cache:         %s\n",
+                        I1.desc_line, D1.desc_line, LL.desc_line);
+   }
+
+   // "cmd:" line
+   VG_(fprintf)(fp, "cmd: %s", VG_(args_the_exename));
+   for (i = 0; i < VG_(sizeXA)( VG_(args_for_client) ); i++) {
+      HChar* arg = * (HChar**) VG_(indexXA)( VG_(args_for_client), i );
+      VG_(fprintf)(fp, " %s", arg);
+   }
+
+   // "events:" line
+*   if (clo_cache_sim && clo_branch_sim) {
+      VG_(fprintf)(fp, "\nevents: Ir I1mr ILmr Dr D1mr DLmr Dw D1mw DLmw "
+                                  "Bc Bcm Bi Bim\n");
+   }
+   else if (clo_cache_sim && !clo_branch_sim) {
+      VG_(fprintf)(fp, "\nevents: Ir I1mr ILmr Dr D1mr DLmr Dw D1mw DLmw "
+                                  "\n");
+   }
+   else if (!clo_cache_sim && clo_branch_sim) {
+      VG_(fprintf)(fp, "\nevents: Ir Bc Bcm Bi Bim\n");
+   }
+   else {
+      VG_(fprintf)(fp, "\nevents: Ir\n");
+   }*
+
+   //"histogram bins:" line
+   VG_(fprintf)(fp, "\nbins: Access#.D1 Cacheline#.D1 ");
+   for(i = 0; i < MAX_NUM_BINS; i++)
+     VG_(fprintf)(fp, "%d-words ", i+1);
+   VG_(fprintf)(fp, "Access#.LL Miss#.LL Cacheline#.LL ");
+   for(i = 0; i < MAX_NUM_BINS; i++)
+     VG_(fprintf)(fp, "%d-words ", i+1);
+   VG_(fprintf)(fp, "\n");
+
+   access_D1 = 0;
+   access_LL = 0;
+   miss_LL = 0;
+   for(i = 0; i < MAX_NUM_BINS; i++)
+   {
+      summary_D1[i] = 0;
+      summary_LL[i] = 0;
+   }
+
+   // Traverse every lineCC
+   VG_(OSetGen_ResetIter)(CC_table);
+   while ( (lineCC = VG_(OSetGen_Next)(CC_table)) ) {
+      Bool just_hit_a_new_file = False;
+      // If we've hit a new file, print a "fl=" line.  Note that because
+      // each string is stored exactly once in the string table, we can use
+      // pointer comparison rather than strcmp() to test for equality, which
+      // is good because most of the time the comparisons are equal and so
+      // the whole strings would have to be checked.
+      if ( lineCC->loc.file != currFile ) {
+         currFile = lineCC->loc.file;
+         VG_(fprintf)(fp, "fl=%s\n", currFile);
+         distinct_files++;
+         just_hit_a_new_file = True;
+      }
+      // If we've hit a new function, print a "fn=" line.  We know to do
+      // this when the function name changes, and also every time we hit a
+      // new file (in which case the new function name might be the same as
+      // in the old file, hence the just_hit_a_new_file test).
+      if ( just_hit_a_new_file || lineCC->loc.fn != currFn ) {
+         currFn = lineCC->loc.fn;
+         VG_(fprintf)(fp, "fn=%s\n", currFn);
+         distinct_fns++;
+      }
+
+      // Print the LineCC
+      total_line_D1 = 0;
+      total_line_LL = 0;
+      for(i = 0; i < MAX_NUM_BINS; i++)
+      {
+        // Update summary stats
+        summary_D1[i] += lineCC->num_evicts_D1[i]; 
+        summary_LL[i] += lineCC->num_evicts_LL[i]; 
+
+        // Calculate stats per line
+        total_line_D1 += lineCC->num_evicts_D1[i]; 
+        total_line_LL += lineCC->num_evicts_LL[i]; 
+      }
+
+      if (clo_cache_sim && (total_line_D1 || total_line_LL)) {
+         access_D1 += lineCC->Dr.a + lineCC->Dw.a;
+         access_LL += lineCC->Dr.m1 + lineCC->Dw.m1;
+         miss_LL += lineCC->Dr.mL + lineCC->Dw.mL;
+         VG_(fprintf)(fp,  "%d %llu %llu" 
+                           " %llu %llu %llu"
+                           " %llu %llu %llu"
+                           " %llu %llu"
+                           " %llu %llu %llu"
+                           " %llu %llu %llu"
+                           " %llu %llu %llu"
+                           " %llu %llu\n",
+                           lineCC->loc.line, lineCC->Dr.a + lineCC->Dw.a, total_line_D1,
+                           lineCC->num_evicts_D1[0], lineCC->num_evicts_D1[1], lineCC->num_evicts_D1[2],
+                           lineCC->num_evicts_D1[3], lineCC->num_evicts_D1[4], lineCC->num_evicts_D1[5],
+                           lineCC->num_evicts_D1[6], lineCC->num_evicts_D1[7],
+                           lineCC->Dr.m1 + lineCC->Dw.m1, lineCC->Dr.mL + lineCC->Dw.mL, total_line_LL,
+                           lineCC->num_evicts_LL[0], lineCC->num_evicts_LL[1], lineCC->num_evicts_LL[2],
+                           lineCC->num_evicts_LL[3], lineCC->num_evicts_LL[4], lineCC->num_evicts_LL[5],
+                           lineCC->num_evicts_LL[6], lineCC->num_evicts_LL[7]);
+      }
+   }
+
+   // Summary stats must come after rest of table, since we calculate them
+   // during traversal.
+   total_D1 = 0;
+   total_LL = 0;
+   for(i = 0; i < MAX_NUM_BINS; i++)
+   {
+      total_D1 += summary_D1[i];
+      total_LL += summary_LL[i];
+   }
+
+   if (clo_cache_sim) {
+      VG_(fprintf)(fp,  "summary: %llu %llu"
+                        " %llu %llu %llu"
+                        " %llu %llu %llu"
+                        " %llu %llu"
+                        " %llu %llu %llu"
+                        " %llu %llu %llu"
+                        " %llu %llu %llu"
+                        " %llu %llu\n",
+                        access_D1, total_D1,
+                        summary_D1[0],summary_D1[1], summary_D1[2],
+                        summary_D1[3],summary_D1[4], summary_D1[5],
+                        summary_D1[6],summary_D1[7],
+                        access_LL, miss_LL, total_LL,
+                        summary_LL[0],summary_LL[1], summary_LL[2],
+                        summary_LL[3],summary_LL[4], summary_LL[5],
+                        summary_LL[6],summary_LL[7]);
+   }
+
+   VG_(fclose)(fp);
+}
+*/
 
 static UInt ULong_width(ULong n)
 {
@@ -1680,7 +2016,8 @@ static void cg_fini(Int exitcode)
    cachesim_finish();
    fprint_CC_table_and_calc_totals();
 
-   fprint_CC_table_and_cache_usage();
+   fprint_CC_table_and_cache_d1_usage();
+   fprint_CC_table_and_cache_ll_usage();
 
    if (VG_(clo_verbosity) == 0) 
       return;
@@ -1862,7 +2199,8 @@ static Bool cg_process_cmd_line_option(const HChar* arg)
                               &clo_LL_cache)) {}
 
    else if VG_STR_CLO( arg, "--cachegrind-out-file", clo_cachegrind_out_file) {}
-   else if VG_STR_CLO( arg, "--cacheusage-out-file", clo_cacheusage_out_file) {}
+   else if VG_STR_CLO( arg, "--cacheusage-d1-out-file", clo_cacheusage_d1_out_file) {}
+   else if VG_STR_CLO( arg, "--cacheusage-ll-out-file", clo_cacheusage_ll_out_file) {}
    else if VG_BOOL_CLO(arg, "--cache-sim",  clo_cache_sim)  {}
    else if VG_BOOL_CLO(arg, "--branch-sim", clo_branch_sim) {}
    else if VG_BOOL_CLO(arg, "--instr-at-start", clo_instr_at_start) {}
@@ -1876,7 +2214,8 @@ static void cg_print_usage(void)
 {
    VG_(printf)(
 "    --cachegrind-out-file=<file>     output file name [cachegrind.out.%%p]\n"
-"    --cacheusage-out-file=<file>     cache usage output file name [cacheusage.out.%%p]\n"
+"    --cacheusage-d1-out-file=<file>     cache usage output file name [cacheusage.d1.out.%%p]\n"
+"    --cacheusage-ll-out-file=<file>     cache usage output file name [cacheusage.ll.out.%%p]\n"
 "    --cache-sim=yes|no               collect cache stats? [no]\n"
 "    --branch-sim=yes|no              collect branch prediction stats? [no]\n"
 "    --instr-at-start=yes|no          instrument at start? [yes]\n"

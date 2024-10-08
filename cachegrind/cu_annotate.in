@@ -805,13 +805,15 @@ class CcPrinter:
         self, cc1: Cc, cc2: Cc | None, i: int
     ) -> tuple[str, str, str]:
         count = f"{cc1[i]:,d}"  # commify
-        if i == 1 and cc1[0] != 0:
-           count = f"{int(cc1[1] / cc1[0]):,d}"
+        if i == 0 and cc1[0] != 0:
+           count = f"{cc1[1] * 100 / cc1[0]:,.1f}%" #miss ratio
+        if i == 1 and cc1[1] != 0:
+           count = f"{int(cc1[0] / cc1[1]):,d}/{int(sum([a*b for a,b in zip([ii for ii in range(1,9)], cc1[3:])])/cc1[2]):,d}" #reuse / averaged number of words
         if args.show_percs:
-            if i == 0:
+            if i == 2:
                 summary_count = self.summary_cc[i]
             else:
-                summary_count = cc1[0]
+                summary_count = cc1[2]
             if cc2 is None:
                 # A plain or inner CC, with a single percentage.
                 if cc1[i] == 0:
@@ -846,10 +848,12 @@ class CcPrinter:
         perc2_w = self.widths[i].perc2
         pre_w = max(0, bin_w - count_w - perc1_w - perc2_w)
         if i == 0:
+            return f"{'':>{pre_w}}{count:>{count_w+perc1_w}} "
+        elif i == 1:
+            return f"{'':>{pre_w}}{count:>{count_w+perc1_w}} "
+        elif i == 2:
             #return f"{'':>{pre_w}}{count:>{count_w}}{perc1:>{perc1_w}}{perc2:>{perc2_w}} "
             return f"{'':>{pre_w}}{count:>{count_w}}{perc1:>{perc1_w}} "
-        elif i == 1:
-            return f"{'':>{pre_w}}{count:>{count_w+perc1_w}}"
         else:
             return f"{'':>{pre_w}}{perc1:>{perc1_w}} "
             #return f"{'':>{pre_w}}{perc1:>{perc1_w}}{perc2:>{perc2_w}} "
@@ -1372,6 +1376,7 @@ def main() -> None:
     # Each of the following calls prints a section of the output.
     print_metadata(descs, cmds, bins)
     print_summary(bins, summary_cc)
+
     ann_mfls = print_mname_summary(
         "File:function", "< ", bins, dict_mfl_dcc, summary_cc
     )
