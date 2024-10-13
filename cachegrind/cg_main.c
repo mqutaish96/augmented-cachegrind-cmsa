@@ -45,6 +45,7 @@
 
 #include "cachegrind.h"
 #include "cg_arch.h"
+#include "cg_helper.c"
 #include "cg_sim.c"
 #include "cg_branchpred.c"
 
@@ -352,7 +353,7 @@ void log_1IrNoX_1Dr_cache_access(InstrInfo* n, Addr data_addr, Word data_size)
 			 &n->parent->Ir.m1, &n->parent->Ir.mL);
    n->parent->Ir.a++;
 
-   cachesim_D1_doref(data_addr, data_size, &n->parent->Dr.m1, &n->parent->Dr.mL, n->parent->loc.line, n->parent);
+   cachesim_D1_doref(data_addr, data_size, &n->parent->Dr.m1, &n->parent->Dr.mL, n->parent->loc.line, n->parent, &n->parent->Dr);
 
    n->parent->Dr.a++;
 }
@@ -367,7 +368,7 @@ void log_1IrNoX_1Dw_cache_access(InstrInfo* n, Addr data_addr, Word data_size)
 			 &n->parent->Ir.m1, &n->parent->Ir.mL);
    n->parent->Ir.a++;
 
-   cachesim_D1_doref(data_addr, data_size, &n->parent->Dw.m1, &n->parent->Dw.mL, n->parent->loc.line, n->parent);
+   cachesim_D1_doref(data_addr, data_size, &n->parent->Dw.m1, &n->parent->Dw.mL, n->parent->loc.line, n->parent, &n->parent->Dw);
 
    n->parent->Dw.a++;
 }
@@ -380,7 +381,7 @@ void log_0Ir_1Dr_cache_access(InstrInfo* n, Addr data_addr, Word data_size)
 {
    //VG_(printf)("0Ir_1Dr:  CCaddr=0x%010lx,  daddr=0x%010lx,  dsize=%lu\n",
    //            n, data_addr, data_size);
-   cachesim_D1_doref(data_addr, data_size, &n->parent->Dr.m1, &n->parent->Dr.mL, n->parent->loc.line, n->parent);
+   cachesim_D1_doref(data_addr, data_size, &n->parent->Dr.m1, &n->parent->Dr.mL, n->parent->loc.line, n->parent, &n->parent->Dr);
 
    n->parent->Dr.a++;
 }
@@ -391,7 +392,7 @@ void log_0Ir_1Dw_cache_access(InstrInfo* n, Addr data_addr, Word data_size)
 {
    //VG_(printf)("0Ir_1Dw:  CCaddr=0x%010lx,  daddr=0x%010lx,  dsize=%lu\n",
    //            n, data_addr, data_size);
-   cachesim_D1_doref(data_addr, data_size, &n->parent->Dw.m1, &n->parent->Dw.mL, n->parent->loc.line, n->parent);
+   cachesim_D1_doref(data_addr, data_size, &n->parent->Dw.m1, &n->parent->Dw.mL, n->parent->loc.line, n->parent, &n->parent->Dw);
 
    n->parent->Dw.a++;
 }
@@ -1521,7 +1522,7 @@ static void fprint_CC_table_and_calc_totals(void)
 static void fprint_CC_table_and_cache_d1_usage(void)
 {
    Int     i;
-   ULong   total_line, summary[MAX_NUM_BINS], total, access, miss;
+   ULong   total_line, summary[MAX_NUM_BINS], total, access, miss, miss_comp, miss_conf, miss_cap;
    VgFile  *fp;
    HChar   *currFile = NULL;
    const HChar *currFn = NULL;
@@ -1582,14 +1583,16 @@ static void fprint_CC_table_and_cache_d1_usage(void)
    }*/
 
    //"histogram bins:" line
-   VG_(fprintf)(fp, "\nbins: Access# Miss# Cacheline# ");
+   VG_(fprintf)(fp, "\nbins: Access# Miss# Comp# Conf# Cap# Cacheline# ");
    for(i = 0; i < MAX_NUM_BINS; i++)
      VG_(fprintf)(fp, "%d-words ", i+1);
    VG_(fprintf)(fp, "\n");
 
    access = 0;
-   access = 0;
    miss = 0;
+   miss_comp = 0;
+   miss_conf = 0;
+   miss_cap = 0;
    for(i = 0; i < MAX_NUM_BINS; i++)
    {
       summary[i] = 0;
@@ -1632,13 +1635,20 @@ static void fprint_CC_table_and_cache_d1_usage(void)
       }
 
       if (clo_cache_sim && total_line) {
+
          access += lineCC->Dr.a + lineCC->Dw.a;
          miss += lineCC->Dr.m1 + lineCC->Dw.m1;
+         miss_comp += lineCC->Dr.m1_comp + lineCC->Dw.m1_comp;
+         miss_conf += lineCC->Dr.m1_conf + lineCC->Dw.m1_conf;
+         miss_cap += lineCC->Dr.m1_cap + lineCC->Dw.m1_cap;
+
          VG_(fprintf)(fp,  "%d %llu %llu %llu" 
                            " %llu %llu %llu"
                            " %llu %llu %llu"
+                           " %llu %llu %llu"
                            " %llu %llu\n",
-                           lineCC->loc.line, lineCC->Dr.a + lineCC->Dw.a, lineCC->Dr.m1 + lineCC->Dw.m1, total_line,
+                           lineCC->loc.line, lineCC->Dr.a + lineCC->Dw.a, lineCC->Dr.m1 + lineCC->Dw.m1, 
+                           lineCC->Dr.m1_comp + lineCC->Dw.m1_comp, lineCC->Dr.m1_conf + lineCC->Dw.m1_conf, lineCC->Dr.m1_cap + lineCC->Dw.m1_cap, total_line,
                            lineCC->num_evicts_D1[0], lineCC->num_evicts_D1[1], lineCC->num_evicts_D1[2],
                            lineCC->num_evicts_D1[3], lineCC->num_evicts_D1[4], lineCC->num_evicts_D1[5],
                            lineCC->num_evicts_D1[6], lineCC->num_evicts_D1[7]);
@@ -1657,8 +1667,10 @@ static void fprint_CC_table_and_cache_d1_usage(void)
       VG_(fprintf)(fp,  "summary: %llu %llu %llu"
                         " %llu %llu %llu"
                         " %llu %llu %llu"
+                        " %llu %llu %llu"
                         " %llu %llu\n",
-                        access, miss, total,
+                        access, miss, 
+                        miss_comp, miss_conf, miss_cap, total,
                         summary[0],summary[1], summary[2],
                         summary[3],summary[4], summary[5],
                         summary[6],summary[7]);
@@ -1670,7 +1682,7 @@ static void fprint_CC_table_and_cache_d1_usage(void)
 static void fprint_CC_table_and_cache_ll_usage(void)
 {
    Int     i;
-   ULong   total_line, summary[MAX_NUM_BINS], total, access, miss;
+   ULong   total_line, summary[MAX_NUM_BINS], total, access, miss, miss_comp, miss_conf, miss_cap;
    VgFile  *fp;
    HChar   *currFile = NULL;
    const HChar *currFn = NULL;
@@ -1731,13 +1743,16 @@ static void fprint_CC_table_and_cache_ll_usage(void)
    }*/
 
    //"histogram bins:" line
-   VG_(fprintf)(fp, "\nbins: Access# Miss# Cacheline# ");
+   VG_(fprintf)(fp, "\nbins: Access# Miss# Comp# Conf# Cap# Cacheline# ");
    for(i = 0; i < MAX_NUM_BINS; i++)
      VG_(fprintf)(fp, "%d-words ", i+1);
    VG_(fprintf)(fp, "\n");
 
    access = 0;
    miss = 0;
+   miss_comp = 0;
+   miss_conf = 0;
+   miss_cap = 0;
    for(i = 0; i < MAX_NUM_BINS; i++)
    {
       summary[i] = 0;
@@ -1780,13 +1795,20 @@ static void fprint_CC_table_and_cache_ll_usage(void)
       }
 
       if (clo_cache_sim && total_line) {
+
          access += lineCC->Dr.m1 + lineCC->Dw.m1;
          miss += lineCC->Dr.mL + lineCC->Dw.mL;
+         miss_comp += lineCC->Dr.mL_comp + lineCC->Dw.mL_comp;
+         miss_conf += lineCC->Dr.mL_conf + lineCC->Dw.mL_conf;
+         miss_cap += lineCC->Dr.mL_cap + lineCC->Dw.mL_cap;
+
          VG_(fprintf)(fp,  "%d %llu %llu %llu" 
                            " %llu %llu %llu"
                            " %llu %llu %llu"
+                           " %llu %llu %llu"
                            " %llu %llu\n",
-                           lineCC->loc.line, lineCC->Dr.m1 + lineCC->Dw.m1, lineCC->Dr.mL + lineCC->Dw.mL, total_line,
+                           lineCC->loc.line, lineCC->Dr.m1 + lineCC->Dw.m1, lineCC->Dr.mL + lineCC->Dw.mL,
+                           lineCC->Dr.mL_comp + lineCC->Dw.mL_comp, lineCC->Dr.mL_conf + lineCC->Dw.mL_conf, lineCC->Dr.mL_cap + lineCC->Dw.mL_cap, total_line,
                            lineCC->num_evicts_LL[0], lineCC->num_evicts_LL[1], lineCC->num_evicts_LL[2],
                            lineCC->num_evicts_LL[3], lineCC->num_evicts_LL[4], lineCC->num_evicts_LL[5],
                            lineCC->num_evicts_LL[6], lineCC->num_evicts_LL[7]);
@@ -1805,8 +1827,10 @@ static void fprint_CC_table_and_cache_ll_usage(void)
       VG_(fprintf)(fp,  "summary: %llu %llu %llu"
                         " %llu %llu %llu"
                         " %llu %llu %llu"
+                        " %llu %llu %llu"
                         " %llu %llu\n",
-                        access, miss, total,
+                        access, miss,
+                        miss_comp, miss_conf, miss_cap, total,
                         summary[0],summary[1], summary[2],
                         summary[3],summary[4], summary[5],
                         summary[6],summary[7]);

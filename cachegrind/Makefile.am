@@ -18,6 +18,7 @@ noinst_HEADERS = \
 	cg_arch.h \
 	cg_branchpred.c \
 	cg_sim.c
+	cg_helper.c
 
 #----------------------------------------------------------------------------
 # cachegrind-<platform>

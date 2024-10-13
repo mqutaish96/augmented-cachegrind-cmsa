@@ -47,6 +47,8 @@ typedef
       ULong a;  /* total # memory accesses of this kind */
       ULong m1; /* misses in the first level cache */
       ULong mL; /* misses in the second level cache */
+      ULong m1_comp, m1_conf, m1_cap;  /* 3 types of cache misses in the first level cache: compulsory, conflict and capacity */
+      ULong mL_comp, mL_conf, mL_cap;  /* 3 types of cache misses in the second level cache: compulsory, conflict and capacity */
    }
    CacheCC;
 
@@ -104,7 +106,6 @@ static Word cmp_CodeLoc_LineCC(const void *vloc, const void *vcc)
 
 /*----------Extension of cache efficiency by JinChao-----------*/
 Int CU_DEBUG = 0;
-VgFile  *cu_fp = NULL;
 
 //Setting nth bit in a bitvector on.
 static
@@ -192,6 +193,10 @@ typedef struct {
 static cache_t2 LL;
 static cache_t2 I1;
 static cache_t2 D1;
+
+static cache_infi INFI;
+static cache_fa FA_D1;
+static cache_fa FA_LL;
 
 /* By this point, the size/assoc/line_size has been checked. */
 static void cachesim_initcache(cache_t config, cache_t2* c)
@@ -408,13 +413,22 @@ void cachesim_collect_undrained_lines(cache_t2* c)
    }
 }
 
+static void cachefa_initcache(cache_t config, cache_fa* c)
+{
+   VG_(fprintf)(cu_fp, "cachefa_initcache capacity: %d\n", config.size);
+   cachefa_setup(c, (config.size / config.line_size));
+}
+
 static void cachesim_initcaches(cache_t I1c, cache_t D1c, cache_t LLc)
 {
+   open_cu_log();
+
    cachesim_initcache(I1c, &I1);
    cachesim_initcache(D1c, &D1);
    cachesim_initcache(LLc, &LL);
 
-   open_cu_log();
+   cachefa_initcache(D1c, &FA_D1);
+   cachefa_initcache(LLc, &FA_LL);
 }
 
 static void cachesim_finish(void)
@@ -459,12 +473,32 @@ void cachesim_I1_doref_NoX(Addr a, UChar size, ULong* m1, ULong *mL)
 
 __attribute__((always_inline))
 static __inline__
-Bool cachesim_D1_doref(Addr a, UChar size, ULong* m1, ULong *mL, int line_num, LineCC* line)
+Bool cachesim_D1_doref(Addr a, UChar size, ULong* m1, ULong *mL, int line_num, LineCC* line, CacheCC* cc)
 {
+   Bool miss_infi = cacheinfi_ref_is_miss(&INFI, a, size);
+   Bool miss_fa = cachefa_ref_is_miss(&FA_D1, a, size);
+   Bool miss_fa_LL = cachefa_ref_is_miss(&FA_LL, a, size);
+
    if (cachesim_ref_is_miss(&D1, a, size, line_num, line)) {
       (*m1)++;
-      if (cachesim_ref_is_miss(&LL, a, size, line_num, line))
+
+     if(miss_infi)
+        cc->m1_comp++;
+      else if(!miss_fa)
+        cc->m1_conf++;
+      else
+        cc->m1_cap++;
+
+      if (cachesim_ref_is_miss(&LL, a, size, line_num, line)) {
          (*mL)++;
+
+         if(miss_infi)
+           cc->mL_comp++;
+         else if(miss_fa_LL)
+           cc->mL_conf++;
+         else
+           cc->mL_cap++;
+      }
 
       return True;
    }
