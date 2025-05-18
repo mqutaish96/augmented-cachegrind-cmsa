@@ -184,7 +184,7 @@ typedef struct {
 //   UWord*       tags;
    UInt         line_mask;
    Int          num_words_per_line;
-   Int          num_words_bits;
+   Int          word_size_bits;
    cacheline_t  *cachelines;
    UInt         *lru_list;
 } cache_t2;
@@ -225,7 +225,7 @@ static void cachesim_initcache(cache_t config, cache_t2* c)
 
    c->line_mask = c->line_size - 1;
    c->num_words_per_line = c->line_size / sizeof(UWord);
-   c->num_words_bits = VG_(log2)(c->num_words_per_line);
+   c->word_size_bits = VG_(log2)(sizeof(UWord));
 
    c->cachelines = VG_(malloc)("cg.sim.ci.1",
                          sizeof(cacheline_t) * c->sets * c->assoc);
@@ -343,8 +343,8 @@ Bool cachesim_ref_is_miss(cache_t2* c, Addr a, UChar size, Int line_num, LineCC 
    UInt  set1   = block1 & c->sets_min_1;
 
    UWord addr_offset = a & c->line_mask; 
-   UWord word_begin = addr_offset >> c->num_words_bits;
-   UWord word_end1 = (addr_offset + size - 1) >> c->num_words_bits;
+   UWord word_begin = addr_offset >> c->word_size_bits;
+   UWord word_end1 = (addr_offset + size - 1) >> c->word_size_bits;
 
    /* Tags used in real caches are minimal to save space.
     * As the last bits of the block number of addresses mapping
@@ -367,8 +367,8 @@ Bool cachesim_ref_is_miss(cache_t2* c, Addr a, UChar size, Int line_num, LineCC 
       UInt  set2 = block2 & c->sets_min_1;
       UWord tag2 = block2;
 
-      UWord word_end2 = word_end1;
-      word_end1 = ((a & c->line_mask) + c->line_size - 1) >> c->num_words_bits;
+      UWord word_end2 = word_end1 - c->num_words_per_line;
+      word_end1 = c->num_words_per_line - 1;
 
       /* always do both, as state is updated as side effect */
       if (cachesim_setref_is_miss(c, set1, tag1, word_begin, word_end1, line_num, line)) {
@@ -458,8 +458,8 @@ void cachesim_I1_doref_NoX(Addr a, UChar size, ULong* m1, ULong *mL)
    UInt  I1_set = block & I1.sets_min_1;
 
    UWord addr_offset = a & I1.line_mask; 
-   UWord word_begin = addr_offset >> I1.num_words_bits;
-   UWord word_end = (addr_offset + size - 1) >> I1.num_words_bits;
+   UWord word_begin = addr_offset >> I1.word_size_bits;
+   UWord word_end = (addr_offset + size - 1) >> I1.word_size_bits;
 
    // use block as tag
    if (cachesim_setref_is_miss(&I1, I1_set, block, word_begin, word_end, 0, NULL)) {
