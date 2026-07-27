@@ -2217,6 +2217,8 @@ void cg_discard_superblock_info ( Addr orig_addr64, VexGuestExtents vge )
 
 static Bool cg_process_cmd_line_option(const HChar* arg)
 {
+   const HChar* tmp_str;
+
    if (VG_(str_clo_cache_opt)(arg,
                               &clo_I1_cache,
                               &clo_D1_cache,
@@ -2225,6 +2227,16 @@ static Bool cg_process_cmd_line_option(const HChar* arg)
    else if VG_STR_CLO( arg, "--cachegrind-out-file", clo_cachegrind_out_file) {}
    else if VG_STR_CLO( arg, "--cacheusage-d1-out-file", clo_cacheusage_d1_out_file) {}
    else if VG_STR_CLO( arg, "--cacheusage-ll-out-file", clo_cacheusage_ll_out_file) {}
+   else if VG_STR_CLO( arg, "--d1-trace", tmp_str) {
+      if (!cachesim_d1_trace_set_mode(tmp_str)) {
+         VG_(fmsg_bad_option)("--d1-trace",
+                              "Expected one of: off, ascii, binary, counter\n");
+      }
+   }
+   else if VG_STR_CLO( arg, "--d1-trace-file", clo_d1_trace_file) {}
+   else if VG_BINT_CLO(arg, "--d1-counter-size",
+                       d1_counter_size, 1, 65535) {}
+   else if VG_BOOL_CLO(arg, "--d1-ground-truth", d1_ground_truth_enabled) {}
    else if VG_BOOL_CLO(arg, "--cache-sim",  clo_cache_sim)  {}
    else if VG_BOOL_CLO(arg, "--branch-sim", clo_branch_sim) {}
    else if VG_BOOL_CLO(arg, "--instr-at-start", clo_instr_at_start) {}
@@ -2240,6 +2252,10 @@ static void cg_print_usage(void)
 "    --cachegrind-out-file=<file>     output file name [cachegrind.out.%%p]\n"
 "    --cacheusage-d1-out-file=<file>     cache usage output file name [cacheusage.d1.out.%%p]\n"
 "    --cacheusage-ll-out-file=<file>     cache usage output file name [cacheusage.ll.out.%%p]\n"
+"    --d1-trace=off|ascii|binary|counter D1 output mode [ascii]\n"
+"    --d1-trace-file=<file>          binary/counter output file [d1miss.out.%%p.bin]\n"
+"    --d1-counter-size=<misses>       misses per counter record [1000]\n"
+"    --d1-ground-truth=yes|no        classify misses with shadow caches [yes]\n"
 "    --cache-sim=yes|no               collect cache stats? [no]\n"
 "    --branch-sim=yes|no              collect branch prediction stats? [no]\n"
 "    --instr-at-start=yes|no          instrument at start? [yes]\n"
@@ -2402,4 +2418,3 @@ VG_DETERMINE_INTERFACE_VERSION(cg_pre_clo_init)
 /*--------------------------------------------------------------------*/
 /*--- end                                                          ---*/
 /*--------------------------------------------------------------------*/
-
