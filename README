@@ -1,3 +1,17 @@
+CMSA augmented Cachegrind
+~~~~~~~~~~~~~~~~~~~~~~~~~
+This research branch adds bounded D1 counter streaming for the Cache Miss
+Signal Analyzer. It supports:
+
+- --d1-trace=off|ascii|binary|counter
+- --d1-trace-file=<path>
+- --d1-counter-size=<misses>
+- --d1-ground-truth=yes|no
+
+Use --d1-trace=counter --d1-ground-truth=no for bounded model-only collection.
+Ground truth is optional and remains independent from the CMSA prediction
+path. Build this branch with ./autogen.sh, ./configure, and make.
+
 Release notes for Valgrind
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 If you are building a binary package of Valgrind for distribution,
