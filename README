@@ -12,6 +12,43 @@ Use --d1-trace=counter --d1-ground-truth=no for bounded model-only collection.
 Ground truth is optional and remains independent from the CMSA prediction
 path. Build this branch with ./autogen.sh, ./configure, and make.
 
+Provenance
+~~~~~~~~~~
+This repository is a fork of Valgrind 3.23.0. Every modification is confined to
+the cachegrind/ directory, the build files, and this README. They were made in
+two stages:
+
+  Chao Jin <c.jin@uq.edu.au>, 2024-2025
+    Temporal and spatial locality measurement, per-layer cache usage, and
+    shadow-cache identification of compulsory, conflict and capacity misses
+    for D1 and LL. This is the work behind --d1-ground-truth.
+      added:    cachegrind/cg_helper.c, cachegrind/cu_annotate.in
+      modified: cachegrind/cg_main.c, cachegrind/cg_sim.c, build files
+
+  Mo'ath Qutaish <m.qutaish@uq.edu.au>, 2026
+    Bounded D1 counter-period streaming for CMSA (--d1-trace=counter and
+    --d1-counter-size), which emits fixed-size counter records rather than an
+    unbounded per-miss trace.
+      modified: cachegrind/cg_sim.c, cachegrind/cg_main.c
+
+Everything outside cachegrind/ and the build files is unmodified upstream
+Valgrind.
+
+Licensing
+~~~~~~~~~
+Valgrind is distributed under the GNU General Public License, version 2 (see
+COPYING); the individual source files permit version 2 or, at your option, any
+later version. The modifications described above are released under those same
+terms. The client-request headers (include/valgrind.h, cachegrind/cachegrind.h
+and similar) retain their upstream BSD-style licence.
+
+Related
+~~~~~~~
+CMSA analyser and paper artifact:
+  https://github.com/mqutaish96/cmsa-protools26-artifact
+
+These tools accompany "A Heuristic Based Cache Miss Classifier", ProTools 2026.
+
 Release notes for Valgrind
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 If you are building a binary package of Valgrind for distribution,
